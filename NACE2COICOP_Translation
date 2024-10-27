@@ -1,0 +1,87 @@
+# Load necessary libraries
+library(readxl)
+library(dplyr)
+library(writexl)
+
+# Step 1: Load the 19x45 Concordance Matrix and clean it up
+cat("Please select the 19x45 concordance matrix Excel file.\n")
+file_path_concordance <- file.choose()
+concordance_matrix <- read_excel(file_path_concordance, sheet = 1, col_names = FALSE)
+
+# Remove any fully NA rows or columns to ensure the matrix is exactly 19x45
+concordance_matrix <- concordance_matrix %>%
+  select(where(~ any(!is.na(.)))) %>%  # Remove columns that are fully NA
+  filter(rowSums(is.na(.)) < ncol(.))   # Remove rows that are fully NA
+
+# Check the dimensions and print a message if the dimensions are not correct
+if (!all(dim(concordance_matrix) == c(19, 45))) {
+  stop("The concordance matrix must be exactly 19x45. Please check the file for extra rows or columns.")
+}
+
+# Transpose the matrix to make it 45x19 for correct mapping
+concordance_matrix <- as.matrix(concordance_matrix)
+concordance_matrix <- t(concordance_matrix)
+
+# Verify that the transposed matrix is 45x19
+if (!all(dim(concordance_matrix) == c(45, 19))) {
+  stop("Concordance matrix must be 45x19 after transposition.")
+}
+
+# Step 2: Normalize the Concordance Matrix (each row should sum to 1)
+row_sums <- rowSums(concordance_matrix)
+concordance_matrix_normalized <- sweep(concordance_matrix, 1, row_sums, FUN = "/")
+
+# Step 3: Load household expenditures for NACE 19 sectors across regions (should be 19x6)
+cat("Please select the household expenditure file for NACE 19 sectors (household_expenditures_NACE_19.xlsx).\n")
+file_path_expenditures <- file.choose()
+expenditures_NACE_19 <- read_excel(file_path_expenditures, sheet = 1, col_names = FALSE)
+colnames(expenditures_NACE_19) <- c("NW", "NE", "Toscana", "Centro", "Sud", "Ext")
+
+# Convert expenditures to a matrix for matrix multiplication
+expenditures_matrix <- as.matrix(expenditures_NACE_19)
+
+# Verify that expenditures_matrix is 19x6
+if (!all(dim(expenditures_matrix) == c(19, 6))) {
+  stop("Expenditures matrix must be 19x6.")
+}
+
+# Step 4: Distribute NACE expenditures to COICOP using the normalized concordance matrix
+# Matrix multiplication: (45x19) %*% (19x6) -> Results in (45x6) matrix for COICOP expenditures
+coicop_expenditures_matrix <- concordance_matrix_normalized %*% expenditures_matrix
+
+# Convert COICOP expenditures matrix back to a data frame for further processing
+coicop_expenditures <- as.data.frame(coicop_expenditures_matrix)
+colnames(coicop_expenditures) <- c("NW", "NE", "Toscana", "Centro", "Sud", "Ext")
+coicop_expenditures$COICOP <- 1:45  # Add COICOP categories as row identifiers
+
+# Step 5: Calculate total sums for each region to ensure they match the target sums
+aggregated_sums <- colSums(coicop_expenditures %>% select(-COICOP))
+
+# Target sums for each region
+target_sums <- c("NW" = 288344.34, "NE" = 206885.173, "Toscana" = 65495.455, "Centro" = 133510.837, "Sud" = 263920.045, "Ext" = 1433.059)
+
+# Step 6: Adjust COICOP expenditures to match target sums
+# Calculate scaling factors to adjust COICOP expenditures to match target sums
+scaling_factors <- target_sums / aggregated_sums
+coicop_expenditures <- coicop_expenditures %>%
+  mutate(across(NW:Ext, ~ .x * scaling_factors[which(names(scaling_factors) == cur_column())]))
+
+# Step 7: Verify Adjusted Totals
+adjusted_aggregated_sums <- colSums(coicop_expenditures %>% select(-COICOP))
+
+# Display original, aggregated, and adjusted sums for verification
+print("Original NACE 19 Expenditure Sums:")
+print(colSums(expenditures_matrix))
+print("Aggregated COICOP Expenditure Sums (Before Adjustment):")
+print(aggregated_sums)
+print("Adjusted COICOP Expenditure Sums (Should Match Target):")
+print(adjusted_aggregated_sums)
+
+# Step 8: Export the adjusted COICOP expenditures and total sums
+write_xlsx(list(
+  "Adjusted_COICOP_Sums" = as.data.frame(t(adjusted_aggregated_sums)),  # Save adjusted sums as a single-row data frame
+  "COICOP_Expenditures" = coicop_expenditures  # Save the 45x6 matrix of adjusted expenditures
+), "adjusted_coicop_expenditures_by_region.xlsx")
+
+# Output success message
+cat("Adjusted COICOP expenditures and adjusted sums by region calculated and saved to 'adjusted_coicop_expenditures_by_region.xlsx'.\n")
